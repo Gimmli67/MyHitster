@@ -1,0 +1,24 @@
+# Credentials
+.env
+.spotify_cache
+
+# Generated files
+_Hitster-Print.pdf
+hitster_druckblatt.pdf
+*.pdf
+
+# Cache & logs
+.mb_cache
+__pycache__/
+*.pyc
+hitster_err.log
+hitster_gen.log
+
+# Processing state
+.processed
+
+# IDE / Claude
+.claude/
+
+# Archive
+\#Archive/
