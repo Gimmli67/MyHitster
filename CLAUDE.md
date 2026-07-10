@@ -47,6 +47,11 @@ PYTHONUTF8=1 python hitster_generator.py Interpret-Titel.txt
 - **Schnittlinien:** Nur auf der Vorderseite (QR). Weiss durch den Kartenbereich, schwarz bis Blattrand. `create_sheet_page(..., cutlines=True)` für Vorderseite, `cutlines=False` für Rückseite.
 - **Lichttest:** Beim Halten gegen das Licht erscheint der Rückseitentext spiegelverkehrt — das ist normal und korrekt. Verifikation durch Ausschneiden einer Karte.
 
+## Deployment
+- **Git-Repo:** Lokal eingerichtet, verbunden mit `https://github.com/Gimmli67/MyHitster`. Aenderungen werden direkt committet und (nach Ruecksprache) gepusht.
+- **Nicht im Repo (`.gitignore`):** `.env`, `.spotify_cache`, `.processed`, `.mb_cache`, `__pycache__/`, `*.pdf`, Logs, `.claude/`, `#Archive/`
+- **Workflow:** Bei Code-Aenderungen automatisch `git pull` (neueste Version holen), dann committen und pushen.
+
 ## Spotify App Konfiguration
 1. https://developer.spotify.com/dashboard → "Create App"
 2. Redirect URI: `http://127.0.0.1:8888/callback`
