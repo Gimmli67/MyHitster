@@ -16,6 +16,9 @@ hitster_gen.log
 
 # Processing state
 .processed
+.processed_csv
+.processed_keys
+.cache
 
 # IDE / Claude
 .claude/

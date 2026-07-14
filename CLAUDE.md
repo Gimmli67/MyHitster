@@ -16,12 +16,11 @@ PYTHONUTF8=1 python hitster_generator.py Interpret-Titel.txt
 ```
 
 ## Wichtige Dateien
-- `hitster_generator.py` – Hauptskript (Playlist-ID `2SCZlvxCLcGyzBSxLMXepb` ist direkt im Script hinterlegt)
-- `Interpret-Titel.txt` – Songliste (Format: `Artist Titel`, eine Zeile pro Song)
-- `.env` – Spotify API Credentials (SPOTIFY_CLIENT_ID, SPOTIFY_CLIENT_SECRET)
-- `.processed` – Bereits zu Karten verarbeitete Songs (für Fortsetzung nach Abbruch)
-- `.spotify_cache` – Gecachter OAuth-Token
-- `Hitster-Print.pdf` – Generierte Karten (früher: `hitster_druckblatt.pdf`)
+- `hitster_generator.py` – Hauptskript (liest CSV-Playlists, kein Spotify-API-Zugriff mehr nötig)
+- `Playlists/` – Exportify-CSV-Dateien aller Playlists (Input, im Git getrackt)
+- `PDF-Print/` – Generierte Druck-PDFs (Output, u.a. `Hitster-Print.pdf`, nicht im Git)
+- `.processed_csv` / `.processed_keys` – Bereits zu Karten verarbeitete Songs (für Fortsetzung nach Abbruch)
+- `.mb_cache` – Gecachte MusicBrainz-Antworten (Original-Erscheinungsjahr)
 
 ## Spotify API Einschränkungen
 - **Development Mode:** Fremde/Spotify-kuratierte Playlists (z.B. "All Out 80s") geben 404. Nur eigene Playlists sind abrufbar. Workaround: Playlists in eigenes Konto kopieren.

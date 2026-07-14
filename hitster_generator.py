@@ -9,14 +9,16 @@ Installation:
 
 Export:
     1. exportify.net aufrufen → mit Spotify anmelden
-    2. Playlist auswählen → CSV herunterladen → in Export/ ablegen
+    2. Playlist auswählen → CSV herunterladen → in Playlists/ ablegen
 
 Nutzung:
-    python hitster_generator.py Export/My_80s.csv
-    python hitster_generator.py Export/My_80s.csv Export/My_90s.csv Export/My_NewWave.csv Export/My_Rock.csv
+    python hitster_generator.py "Playlists/My Hitster Playlist.csv"
+
+Ausgabe:
+    Fertige PDF landet in PDF-Print/Hitster-Print.pdf
 """
 
-import sys, math, os, re, csv, json, time, unicodedata
+import sys, math, os, re, csv, json, time, unicodedata, tempfile, shutil
 import requests
 import qrcode
 from PIL import Image, ImageDraw, ImageFont
@@ -28,7 +30,7 @@ MARGIN = 28
 # Duplex-Druckversatz: Rückseite erscheint beim Gegenhalten gegen das Licht
 # um diesen Wert nach links verschoben → positiver Wert korrigiert nach rechts.
 # Einheit: mm. Anpassen falls Drucker anders abweicht. 0 = keine Korrektur.
-BACK_OFFSET_MM = 1.5
+BACK_OFFSET_MM = 0
 BACK_OFFSET_PX = round(BACK_OFFSET_MM * 300 / 25.4)
 
 FONT_BOLD    = "C:/Windows/Fonts/arialbd.ttf"
@@ -55,23 +57,24 @@ def _font(path: str, size: int) -> ImageFont.FreeTypeFont:
 # Matches suffixes after " - " / " – " / " — " that should be stripped
 _SUFFIX_RE = re.compile(
     r"^("
-    r"(\d{4}\s+)?remaster(ed)?(\s+\d{4})?(\s+(version|mix))?"
+    r"(\d{4}\s+)?(digital(ly)?\s+)?remaster(ed)?(\s+\d{4})?(\s+(version|mix))?"
     r"|deluxe(\s+edition)?"
-    r"|anniversary(\s+edition)?"
+    r"|anniversary(\s+edition)?(\s+(edition|remaster(ed)?)(\s+\d{4})?)?"
     r"|bonus\s+tracks?(\s+version)?"
     r"|expanded(\s+edition)?"
     r"|super\s+deluxe(\s+edition)?"
     r"|special\s+edition"
-    r"|(\d+th|\d+st|\d+nd|\d+rd)\s+anniversary"
+    r"|(\d+th|\d+st|\d+nd|\d+rd)\s+anniversary(\s+(edition|remaster(ed)?)(\s+\d{4})?)?"
     r"|live(\s+(at|in|from|version|recording).*)?"
     r"|radio\s+(version|mix|edit|cut)"
     r"|single\s+(version|edit|mix|cut)"
     r"|video\s+edit"
     r"|tv\s+(mix|version)"
+    r"|edit|remix|mix"
     r"|(club|dance|extended|original|acoustic|unplugged|disco)\s+(mix|version|edit|recording)"
     r"|original\s+(mix|version|recording)"
     r"|re-?recorded"
-    r"|from\s+\S"
+    r"|from\s+.+"
     r"|.*\bsoundtrack\b.*"
     r"|\d{4}(\s*[-–—]\s*.+)?"
     r"|.+\s+(mix|edit|version|remix)(\s+\d{4})?"
@@ -89,19 +92,35 @@ _CLEANUP_PAREN = re.compile(
     re.IGNORECASE,
 )
 
+# Matches bracketed version/edition/mix/live tags to strip, e.g. "[Radio Edit]"
+_CLEANUP_BRACKET = re.compile(
+    r"\s*\[\s*("
+    r"(\d{4}\s+)?remaster(ed)?[^\]]*"
+    r"|live[^\]]*"
+    r"|[^\]]*\b(mix|edit|version|remix)\b[^\]]*"
+    r")\s*\]",
+    re.IGNORECASE,
+)
+
 
 def _clean_title(title: str) -> str:
     # Strip semicolon-separated suffix variants ("- Single Version; 2019 Remaster")
     if ";" in title:
         title = title[: title.index(";")].strip()
-    # Strip dash-separated version/remix/edit suffixes
+    # Strip parenthetical/bracketed version/edition/mix tags first, so a trailing
+    # dash-suffix isn't hidden behind them (e.g. "Song - Radio Edit [Remastered]")
+    title = _CLEANUP_PAREN.sub("", title)
+    title = _CLEANUP_BRACKET.sub("", title)
+    # Strip dash-separated version/remix/edit suffixes, incl. "/"-chained tags
+    # ("Fast Version / 2003 Digital Remaster")
     m = re.search(r"\s+[-–—]\s+", title)
     if m:
-        suffix = title[m.end() :]
-        if _SUFFIX_RE.match(suffix.strip()):
+        suffix = title[m.end() :].strip()
+        segments = [s.strip() for s in re.split(r"\s*/\s*", suffix) if s.strip()]
+        if segments and all(_SUFFIX_RE.match(seg) for seg in segments):
             title = title[: m.start()]
-    # Strip parenthetical version/edition/mix tags
-    title = _CLEANUP_PAREN.sub("", title)
+    # Drop a leftover separator dangling at the end after tag removal ("Song -")
+    title = re.sub(r"[\s,/\-–—]+$", "", title)
     return title.strip()
 
 
@@ -112,6 +131,22 @@ def _dedup_key(artist: str, title: str) -> str:
         s = re.sub(r"[^\w\s]", "", s)
         return re.sub(r"\s+", " ", s).strip()
     return norm(artist) + "|" + norm(title)
+
+
+def load_reference_keys(csv_path: str) -> set:
+    """Lädt Artist/Titel-Dedup-Keys aus der Abgleichsliste offizieller Hitster-Editionen
+    (Format: Artist,Title,Year,Editions — kein Exportify-Export)."""
+    keys: set = set()
+    if not os.path.isfile(csv_path):
+        return keys
+    with open(csv_path, encoding="utf-8-sig", newline="") as f:
+        reader = csv.DictReader(f)
+        for row in reader:
+            artist = row.get("Artist", "").strip()
+            title = row.get("Title", "").strip()
+            if artist and title:
+                keys.add(_dedup_key(artist, _clean_title(title)))
+    return keys
 
 
 def _load_mb_cache():
@@ -502,13 +537,15 @@ def create_sheet_page(cards: list, cols: int = 3, mirror: bool = False,
 # ─── Hauptprogramm ───────────────────────────────────────────────────────────
 
 if __name__ == "__main__":
-    PDF_FILE            = "Hitster-Print.pdf"
+    PDF_DIR              = "PDF-Print"
+    os.makedirs(PDF_DIR, exist_ok=True)
+    PDF_FILE            = os.path.join(PDF_DIR, "Hitster-Print.pdf")
     PROCESSED_FILE      = ".processed_csv"
     PROCESSED_KEYS_FILE = ".processed_keys"
     CARDS_PER_PAGE      = 12
 
     if len(sys.argv) < 2:
-        print("Nutzung: python hitster_generator.py Export/My_80s.csv [--pages N]")
+        print('Nutzung: python hitster_generator.py "Playlists/My Hitster Playlist.csv" [--pages N]')
         sys.exit(1)
 
     args = sys.argv[1:]
@@ -521,6 +558,18 @@ if __name__ == "__main__":
         except (IndexError, ValueError):
             print("Fehler: --pages erwartet eine Zahl, z.B. --pages 2")
             sys.exit(1)
+
+    if "--offset" in args:
+        idx = args.index("--offset")
+        try:
+            BACK_OFFSET_MM = float(args[idx + 1])
+            BACK_OFFSET_PX = round(BACK_OFFSET_MM * 300 / 25.4)
+            args = args[:idx] + args[idx + 2:]
+        except (IndexError, ValueError):
+            print("Fehler: --offset erwartet eine Zahl in mm, z.B. --offset 1.5")
+            sys.exit(1)
+
+    REFERENCE_FILE = os.path.join("Playlists", "Hitster_Original_Songs.csv")
 
     csv_files = args
     _load_mb_cache()
@@ -536,10 +585,15 @@ if __name__ == "__main__":
         with open(PROCESSED_KEYS_FILE, encoding="utf-8") as f:
             seen_keys = {l.strip() for l in f if l.strip()}
 
+    reference_keys = load_reference_keys(REFERENCE_FILE)
+    if reference_keys:
+        print(f"✓ Abgleichsliste geladen: {len(reference_keys)} Songs aus offiziellen Hitster-Editionen\n")
+
     # ── Alle Songs aus CSVs laden, URI- und Titel-Duplikate entfernen ────
     seen_uris: set = set(processed_uris)
     all_songs: list = []
     total_dupes = 0
+    total_reference_dupes = 0
     for csv_path in csv_files:
         songs = read_csv_songs(csv_path)
         new_songs = []
@@ -550,6 +604,9 @@ if __name__ == "__main__":
             if key in seen_keys:
                 total_dupes += 1
                 continue
+            if key in reference_keys:
+                total_reference_dupes += 1
+                continue
             seen_uris.add(s["uri"])
             seen_keys.add(key)
             new_songs.append(s)
@@ -558,6 +615,8 @@ if __name__ == "__main__":
 
     if total_dupes:
         print(f"  ({total_dupes} Duplikate entfernt)")
+    if total_reference_dupes:
+        print(f"  ({total_reference_dupes} bereits in offiziellen Hitster-Editionen enthalten, übersprungen)")
 
     if max_pages is not None:
         limit = max_pages * CARDS_PER_PAGE
@@ -576,25 +635,45 @@ if __name__ == "__main__":
     already_on_page = already_done % CARDS_PER_PAGE
     start_number   = already_done + 1
 
-    existing_pages: list = []
+    tmp_dir = tempfile.mkdtemp(prefix="hitster_")
+    page_count = 0
+
     if os.path.isfile(PDF_FILE) and already_done > 0:
         try:
             existing_pdf = Image.open(PDF_FILE)
-            existing_pages.append(existing_pdf.convert("RGB"))
-            for frame_idx in range(1, getattr(existing_pdf, "n_frames", 1)):
-                existing_pdf.seek(frame_idx)
-                existing_pages.append(existing_pdf.copy().convert("RGB"))
-            if already_on_page > 0:
-                existing_pages = existing_pages[:-2]
-            print(f"✓ Bestehende PDF geladen ({len(existing_pages)} Seiten)\n")
+            n_frames = getattr(existing_pdf, "n_frames", 1)
+            keep = n_frames - (2 if already_on_page > 0 else 0)
+            for frame_idx in range(keep):
+                if frame_idx > 0:
+                    existing_pdf.seek(frame_idx)
+                pg = existing_pdf.copy().convert("RGB")
+                pg.save(os.path.join(tmp_dir, f"page_{page_count:04d}.png"))
+                pg.close()
+                page_count += 1
+            existing_pdf.close()
+            print(f"✓ Bestehende PDF geladen ({page_count} Seiten)\n")
         except Exception:
-            existing_pages = []
+            page_count = 0
 
-    def _save_pdf(pages):
+    def _save_page_to_tmp(img):
+        """Speichert eine Seite als PNG im tmp-Verzeichnis, gibt RAM frei."""
+        idx = len(os.listdir(tmp_dir))
+        img.save(os.path.join(tmp_dir, f"page_{idx:04d}.png"))
+        img.close()
+
+    def _save_pdf():
+        """Baut PDF aus den tmp-PNGs — lädt nur je 1 Seite in den RAM."""
+        pages = sorted(os.listdir(tmp_dir))
         if not pages:
             return
-        rgb = [p.convert("RGB") for p in pages]
-        rgb[0].save(PDF_FILE, "PDF", resolution=300, save_all=True, append_images=rgb[1:])
+        first = Image.open(os.path.join(tmp_dir, pages[0])).convert("RGB")
+        rest = []
+        for p in pages[1:]:
+            rest.append(Image.open(os.path.join(tmp_dir, p)).convert("RGB"))
+        first.save(PDF_FILE, "PDF", resolution=300, save_all=True, append_images=rest)
+        first.close()
+        for p in rest:
+            p.close()
 
     # ── Karten generieren ─────────────────────────────────────────────────
     fronts, backs    = [], []
@@ -637,9 +716,9 @@ if __name__ == "__main__":
                 fronts = fronts[CARDS_PER_PAGE:]
                 backs  = backs[CARDS_PER_PAGE:]
 
-            existing_pages.append(create_sheet_page(pf, cols=3, mirror=False, cutlines=True))
-            existing_pages.append(create_sheet_page(pb, cols=3, mirror=True))
-            _save_pdf(existing_pages)
+            _save_page_to_tmp(create_sheet_page(pf, cols=3, mirror=False, cutlines=True))
+            _save_page_to_tmp(create_sheet_page(pb, cols=3, mirror=True))
+            _save_pdf()
 
             with open(PROCESSED_FILE, "a", encoding="utf-8") as f:
                 for uri in new_uris:
@@ -666,8 +745,8 @@ if __name__ == "__main__":
             pf, pb = ph + fronts, ph + backs
         else:
             pf, pb = fronts, backs
-        existing_pages.append(create_sheet_page(pf, cols=3, mirror=False, cutlines=True))
-        existing_pages.append(create_sheet_page(pb, cols=3, mirror=True))
+        _save_page_to_tmp(create_sheet_page(pf, cols=3, mirror=False, cutlines=True))
+        _save_page_to_tmp(create_sheet_page(pb, cols=3, mirror=True))
 
     if new_uris:
         with open(PROCESSED_FILE, "a", encoding="utf-8") as f:
@@ -679,8 +758,10 @@ if __name__ == "__main__":
         _save_mb_cache()
         total_new += len(new_uris)
 
-    if existing_pages:
-        _save_pdf(existing_pages)
+    if total_new > 0:
+        _save_pdf()
+
+    shutil.rmtree(tmp_dir, ignore_errors=True)
 
     total = already_done + total_new
     if total_new > 0:
