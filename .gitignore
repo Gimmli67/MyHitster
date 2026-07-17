@@ -2,10 +2,11 @@
 .env
 .spotify_cache
 
-# Generated files
+# Generated PDFs (only in PDF-Print folder and root)
+PDF-Print/
+Hitster-Print.pdf
 _Hitster-Print.pdf
 hitster_druckblatt.pdf
-*.pdf
 
 # Cache & logs
 .mb_cache
@@ -25,3 +26,6 @@ hitster_gen.log
 
 # Archive
 \#Archive/
+
+# Temp files
+~$*

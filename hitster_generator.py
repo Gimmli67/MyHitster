@@ -67,17 +67,21 @@ _SUFFIX_RE = re.compile(
     r"|(\d+th|\d+st|\d+nd|\d+rd)\s+anniversary(\s+(edition|remaster(ed)?)(\s+\d{4})?)?"
     r"|live(\s+(at|in|from|version|recording).*)?"
     r"|radio\s+(version|mix|edit|cut)"
-    r"|single\s+(version|edit|mix|cut)"
+    r"|single(\s+(version|edit|mix|cut))?"
+    r"|instrumental(\s+(version|mix))?"
     r"|video\s+edit"
     r"|tv\s+(mix|version)"
     r"|edit|remix|mix"
     r"|(club|dance|extended|original|acoustic|unplugged|disco)\s+(mix|version|edit|recording)"
     r"|original\s+(mix|version|recording)"
+    r"|mono|stereo"
     r"|re-?recorded"
     r"|from\s+.+"
     r"|.*\bsoundtrack\b.*"
     r"|\d{4}(\s*[-–—]\s*.+)?"
     r"|.+\s+(mix|edit|version|remix)(\s+\d{4})?"
+    r"|.+\s+remaster(ed)?(\s+\d{4})?"
+    r"|\d+\s+years?\s+remaster(ed)?(\s+\d{4})?"
     r")$",
     re.IGNORECASE | re.DOTALL,
 )
@@ -87,6 +91,7 @@ _CLEANUP_PAREN = re.compile(
     r"\s*\(\s*("
     r"(\d{4}\s+)?remaster(ed)?[^)]*"
     r"|live[^)]*"
+    r"|instrumental(\s+(version|mix))?"
     r"|[^)]*\b(mix|edit|version|remix)\b[^)]*"
     r")\s*\)",
     re.IGNORECASE,
@@ -95,8 +100,9 @@ _CLEANUP_PAREN = re.compile(
 # Matches bracketed version/edition/mix/live tags to strip, e.g. "[Radio Edit]"
 _CLEANUP_BRACKET = re.compile(
     r"\s*\[\s*("
-    r"(\d{4}\s+)?remaster(ed)?[^\]]*"
+    r"[^\]]*\bremaster(ed)?\b[^\]]*"
     r"|live[^\]]*"
+    r"|bonus\s+track[^\]]*"
     r"|[^\]]*\b(mix|edit|version|remix)\b[^\]]*"
     r")\s*\]",
     re.IGNORECASE,
@@ -111,17 +117,63 @@ def _clean_title(title: str) -> str:
     # dash-suffix isn't hidden behind them (e.g. "Song - Radio Edit [Remastered]")
     title = _CLEANUP_PAREN.sub("", title)
     title = _CLEANUP_BRACKET.sub("", title)
-    # Strip dash-separated version/remix/edit suffixes, incl. "/"-chained tags
-    # ("Fast Version / 2003 Digital Remaster")
-    m = re.search(r"\s+[-–—]\s+", title)
-    if m:
+    # Strip dash-separated version/remix/edit suffixes from right to left,
+    # incl. "/"-chained tags ("Fast Version / 2003 Digital Remaster")
+    while True:
+        matches = list(re.finditer(r"\s+[-–—]\s+", title))
+        if not matches:
+            break
+        m = matches[-1]  # rightmost dash separator
         suffix = title[m.end() :].strip()
-        segments = [s.strip() for s in re.split(r"\s*/\s*", suffix) if s.strip()]
+        segments = [s.strip() for s in re.split(r"\s+/\s+", suffix) if s.strip()]
         if segments and all(_SUFFIX_RE.match(seg) for seg in segments):
             title = title[: m.start()]
+        else:
+            break
     # Drop a leftover separator dangling at the end after tag removal ("Song -")
     title = re.sub(r"[\s,/\-–—]+$", "", title)
     return title.strip()
+
+
+# Artists/Titles that must keep their ALL-CAPS spelling
+_ALLCAPS_KEEP = {
+    "INXS", "AC/DC", "ABBA", "DEVO", "TOTO", "KISS", "U2", "UB40",
+    "R.E.M.", "TLC", "ATB", "RMB", "U96", "EMF", "OMD", "XTC", "UFO",
+    "SNAP!", "CHIC", "SOS", "DNA", "ABC", "M/A/R/R/S", "DAF",
+    "DJ BoBo", "DJ", "ZZ Top", "MC", "DMC", "D.J.", "DJ",
+    "GIGI D'AGOSTINO", "CHROM", "VNV Nation", "EBM",
+    "N-Trance", "E-Type", "E-Rotic", "N'SYNC", "*NSYNC",
+    "OK", "TV", "USA", "UK", "NYC", "LA", "SOS", "TNT", "DNA",
+    "CEO", "DJ", "MC", "MR", "MRS", "DR", "VS",
+}
+
+# Words that should only match as whole words (e.g. roman numerals)
+_ALLCAPS_WHOLEWORD = {
+    "II", "III", "IV", "VI", "VII", "VIII", "IX", "XI", "XII",
+    "DJ", "MC", "DR", "MR", "VS",
+}
+
+def _fix_caps(text: str) -> str:
+    """Korrigiert ALL-CAPS Text zu Title Case, behält bekannte Akronyme bei."""
+    if not text or not text.isupper() or len(text) <= 3:
+        return text
+    # Check if the whole string is a known exception
+    if text in _ALLCAPS_KEEP:
+        return text
+    # Title-case it, then restore any known acronyms within
+    result = text.title()
+    # Fix common patterns: Mc/Mac names, apostrophes
+    result = re.sub(r"\bMc(\w)", lambda m: "Mc" + m.group(1).upper(), result)
+    # Restore known all-caps words (whole-word match only)
+    for word in _ALLCAPS_WHOLEWORD:
+        pattern = re.compile(r"\b" + re.escape(word) + r"\b", re.IGNORECASE)
+        result = pattern.sub(word, result)
+    # Restore known all-caps words (substring match)
+    for word in _ALLCAPS_KEEP - _ALLCAPS_WHOLEWORD:
+        pattern = re.compile(re.escape(word), re.IGNORECASE)
+        if pattern.search(result):
+            result = pattern.sub(word, result)
+    return result
 
 
 def _dedup_key(artist: str, title: str) -> str:
@@ -303,10 +355,10 @@ def read_csv_songs(csv_path: str) -> list:
                 track_id = uri.split(":")[-1]
                 link = f"https://open.spotify.com/track/{track_id}"
 
-                # Artist: Semikolon-getrennt → Komma
-                artists = row.get("Artist Name(s)", "").replace(";", ", ")
+                # Artist: nur Hauptinterpret (vor dem ersten Semikolon)
+                artists = _fix_caps(row.get("Artist Name(s)", "").split(";")[0].strip())
 
-                title = _clean_title(row.get("Track Name", "").strip())
+                title = _fix_caps(_clean_title(row.get("Track Name", "").strip()))
                 release_date = row.get("Release Date", "")
                 year = release_date[:4] if len(release_date) >= 4 else "????"
                 genre = map_genre(row.get("Genres", ""))
